@@ -1,0 +1,13 @@
+# --- Computo y datos ---
+numpy>=1.23
+scikit-learn>=1.0      # solo para regenerar digits.npz (no se necesita en Khipu)
+
+# --- Paralelismo (cluster) ---
+mpi4py>=3.1            # requiere un MPI instalado (OpenMPI en Khipu)
+
+# --- Figuras del informe ---
+matplotlib>=3.6
+
+# --- Orquestacion del cluster y slides ---
+paramiko>=3.0          # subir/correr/descargar en Khipu por SSH
+python-pptx>=0.6       # generar la presentacion desde la plantilla

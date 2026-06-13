@@ -1,0 +1,26 @@
+# Secretos / credenciales (NUNCA subir)
+access.txt
+*.secret
+.pibot-secret
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+knnmpi-venv/
+
+# Documentos de entrega (van a Canvas, NO al repo de codigo):
+# el informe LaTeX/PDF, la presentacion y el generador de slides.
+informe/
+Presentacion_KNN_MPI.pptx
+src/make_slides.py
+
+# Notas internas / artefactos de QA (no forman parte de la entrega)
+GUIA_ALINEACION_PROFESOR.md
+extracciones_transcripciones.json
+_ppt_preview.pdf
+
+# Sistema
+.DS_Store
+Thumbs.db
