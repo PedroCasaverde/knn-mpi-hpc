@@ -3,6 +3,11 @@ Saca las figuras del informe usando los CSV que dejo el benchmark en Khipu.
 Encima dibujo la curva teorica alpha-beta para comparar teoria vs experimento.
 
     python src/make_figures.py
+
+Los CSV vienen del barrido multi-nodo (2 nodos, --map-by node), asi que la
+comunicacion es de RED y no un memcpy. La variante que se grafica por defecto
+es la v3 (colectivas con buffer); la v2 (pickle) se usa solo para la figura
+comparativa de la mejora.
 """
 import csv
 import os
@@ -21,8 +26,8 @@ RES = os.path.join(ROOT, "results", "khipu")
 FIGS = os.path.join(ROOT, "results", "figs")     # las figuras cuentan como resultado, asi que al repo
 INFORME = os.path.join(ROOT, "informe")          # los .tex chiquitos los dejo local nomas
 os.makedirs(FIGS, exist_ok=True)
+os.makedirs(INFORME, exist_ok=True)
 
-# dejo los plots un poco mas presentables para que no se vean por defecto
 plt.rcParams.update({
     "figure.figsize": (6.4, 4.2),
     "figure.dpi": 130,
@@ -41,7 +46,10 @@ plt.rcParams.update({
     "savefig.bbox": "tight",
 })
 C = {"exp": "#1f77b4", "comp": "#2ca02c", "comm": "#d62728",
-     "model": "#ff7f0e", "ideal": "#7f7f7f", "extra": "#9467bd"}
+     "model": "#ff7f0e", "ideal": "#7f7f7f", "extra": "#9467bd",
+     "bcast": "#17becf", "scatter": "#bcbd22", "gather": "#e377c2"}
+
+TEXTO = {"impl", "variant"}     # columnas que NO son numeros
 
 
 def load(name):
@@ -51,10 +59,17 @@ def load(name):
     with open(path) as f:
         rows = list(csv.DictReader(f))
     for r in rows:
-        for kk, vv in r.items():
-            if kk != "impl":
-                r[kk] = float(vv)
+        for kk, vv in list(r.items()):
+            if kk not in TEXTO:
+                try:
+                    r[kk] = float(vv)
+                except (TypeError, ValueError):
+                    pass
     return rows
+
+
+def col(rows, name):
+    return np.array([r[name] for r in rows], dtype=float)
 
 
 def save(fig, base):
@@ -65,59 +80,67 @@ def save(fig, base):
 
 
 def main():
-    strong = sorted(load("strong.csv"), key=lambda r: r["p"])
+    todo = load("strong.csv")
+    # la v3 es la implementacion final; si el csv es viejo y no trae variant, uso todo
+    strong = sorted([r for r in todo if r.get("variant", "v3") == "v3"], key=lambda r: r["p"])
+    v2 = sorted([r for r in todo if r.get("variant") == "v2"], key=lambda r: r["p"])
     size = sorted(load("size.csv"), key=lambda r: r["n"])
-    weak = sorted(load("weak.csv"), key=lambda r: r["p"])
+    weak = sorted(load("weak.csv"), key=lambda r: (r["n_te"], r["p"]))
+    hyb = sorted(load("hybrid.csv"), key=lambda r: -r["p"])
+    ener = sorted(load("energia.csv"), key=lambda r: r["p"])
 
     if not strong:
         sys.exit(f"[ERR] no encuentro {RES}/strong.csv - corre primero el benchmark en Khipu.")
 
-    p = np.array([r["p"] for r in strong])
-    t_tot = np.array([r["t_total"] for r in strong])
-    t_cmp = np.array([r["t_comp"] for r in strong])
-    t_cmm = np.array([r["t_comm"] for r in strong])
-    gflz = np.array([r["gflops_total"] for r in strong])
-    acc = np.array([r["acc"] for r in strong])
+    p = col(strong, "p")
+    t_tot, t_cmp, t_cmm = col(strong, "t_total"), col(strong, "t_comp"), col(strong, "t_comm")
+    gflz, acc = col(strong, "gflops_total"), col(strong, "acc")
+    sd_tot = col(strong, "t_total_std") if "t_total_std" in strong[0] else np.zeros_like(p)
     n_tr, n_te = strong[0]["n_tr"], strong[0]["n_te"]
     d, k = strong[0]["d"], strong[0]["k"]
     ts = t_tot[0]                                   # el caso p=1 es mi tiempo secuencial de referencia
 
-    # ajusto alpha y beta del modelo a lo que medi (calibracion a los datos)
     alpha, beta = M.calibrate_comm(p, t_cmm, n_tr, n_te, d, k)
+    c_comp = M.constante_computo(ts, n_tr, n_te, d)
     p_opt = M.optimal_p(ts, n_tr, n_te, d, k, alpha, beta)
+    p_opt_exp = int(p[int(np.argmin(t_tot))])       # el optimo que se ve en los datos
     pg = np.linspace(1, p.max(), 200)
     tt_model = M.t_total(pg, ts, n_tr, n_te, d, k, alpha, beta)
     print(f"Calibracion: Ts={ts:.4f}s  alpha={alpha*1e6:.2f} us  "
-          f"beta={beta*1e9:.3f} ns/byte (BW~{1/beta/1e9:.2f} GB/s)  p_opt={p_opt}")
+          f"beta={beta*1e9:.3f} ns/byte (BW~{1/beta/1e9:.2f} GB/s)  "
+          f"p_opt(modelo)={p_opt}  p_opt(medido)={p_opt_exp}")
+
+    s_exp = ts / t_tot
+    e_exp = s_exp / p
+    s_mod = ts / M.t_total(pg, ts, n_tr, n_te, d, k, alpha, beta)
+    e_mod = s_mod / pg
+    frac = t_cmm / t_tot * 100.0
 
     # === FIG 1: como se reparte el tiempo entre computo y comunicacion ===
     fig, ax = plt.subplots()
-    ax.loglog(p, t_tot, "o-", color=C["exp"], label="Total (medido)")
+    ax.errorbar(p, t_tot, yerr=sd_tot, fmt="o-", color=C["exp"], capsize=3, label="Total (medido)")
     ax.loglog(p, t_cmp, "s--", color=C["comp"], label="Computo (medido)")
     ax.loglog(p, np.maximum(t_cmm, 1e-6), "^--", color=C["comm"], label="Comunicacion (medido)")
     ax.loglog(pg, tt_model, "-", color=C["model"], lw=2.4, alpha=0.85, label="Total (modelo $\\alpha\\!-\\!\\beta$)")
-    ax.axvline(p_opt, color=C["extra"], ls=":", lw=1.8)
-    ax.text(p_opt, ax.get_ylim()[1]*0.6, f" $p_{{opt}}\\approx{p_opt}$", color=C["extra"], fontsize=10)
+    ax.set_xscale("log"); ax.set_yscale("log")
+    ax.axvline(p_opt_exp, color=C["extra"], ls=":", lw=1.8)
+    ax.text(p_opt_exp, ax.get_ylim()[1] * 0.55, f" $p_{{opt}}={p_opt_exp}$", color=C["extra"], fontsize=10)
     ax.set_xlabel("numero de procesos $p$"); ax.set_ylabel("tiempo [s]")
     ax.set_title(f"Tiempo de ejecucion vs procesos (n={int(strong[0]['n'])}, k={int(k)})")
     ax.set_xticks(p); ax.set_xticklabels([int(x) for x in p]); ax.legend()
     save(fig, "fig_tiempos")
 
-    # === FIG 2: speedup, lo medido contra la curva ideal y el modelo ===
-    s_exp = ts / t_tot
-    s_mod = ts / M.t_total(pg, ts, n_tr, n_te, d, k, alpha, beta)
+    # === FIG 2: speedup ===
     fig, ax = plt.subplots()
     ax.plot(p, p, "--", color=C["ideal"], label="Speedup ideal ($S=p$)")
     ax.plot(pg, s_mod, "-", color=C["model"], alpha=0.85, label="Modelo $\\alpha\\!-\\!\\beta$")
-    ax.plot(p, s_exp, "o-", color=C["exp"], label="Medido (Khipu)")
+    ax.errorbar(p, s_exp, yerr=s_exp * sd_tot / t_tot, fmt="o-", color=C["exp"], capsize=3, label="Medido (Khipu)")
     ax.set_xlabel("numero de procesos $p$"); ax.set_ylabel("speedup $S(p)=T_s/T_p$")
     ax.set_title("Speedup vs procesos")
     ax.set_xticks(p); ax.set_xticklabels([int(x) for x in p]); ax.legend()
     save(fig, "fig_speedup")
 
-    # === FIG 3: eficiencia, con la rayita del 80% para tener referencia ===
-    e_exp = s_exp / p
-    e_mod = s_mod / pg
+    # === FIG 3: eficiencia ===
     fig, ax = plt.subplots()
     ax.axhline(1.0, color=C["ideal"], ls="--", label="Ideal ($E=1$)")
     ax.axhline(0.8, color="#bbbbbb", ls=":", label="Umbral 80%")
@@ -129,7 +152,7 @@ def main():
     ax.set_xticks(p); ax.set_xticklabels([int(x) for x in p]); ax.legend()
     save(fig, "fig_eficiencia")
 
-    # === FIG 4: rendimiento sostenido en GFLOP/s al subir p ===
+    # === FIG 4: FLOP/s ===
     gf_mod = (n_te * n_tr * 3 * d) / M.t_total(pg, ts, n_tr, n_te, d, k, alpha, beta) / 1e9
     fig, ax = plt.subplots()
     ax.plot(pg, gf_mod, "-", color=C["model"], alpha=0.85, label="Modelo $\\alpha\\!-\\!\\beta$")
@@ -139,129 +162,234 @@ def main():
     ax.set_xticks(p); ax.set_xticklabels([int(x) for x in p]); ax.legend()
     save(fig, "fig_flops")
 
-    # === FIG 5: que pasa al agrandar el problema con p=8 fijo ===
+    # === FIG 5: tamano del problema (p=8) ===
     if size:
-        ns = np.array([r["n"] for r in size])
-        tts = np.array([r["t_total"] for r in size])
-        accs = np.array([r["acc"] for r in size])
-        # el computo va como n_tr*n_te/p (o sea ~n^2); solo me falta la constante, la saco de los datos
-        n_te_s = np.array([r["n_te"] for r in size]); n_tr_s = np.array([r["n_tr"] for r in size])
+        ns = col(size, "n"); tts = col(size, "t_total"); accs = col(size, "acc")
+        n_te_s, n_tr_s = col(size, "n_te"), col(size, "n_tr")
         work = n_tr_s * n_te_s
-        kfit = np.sum(tts * work) / np.sum(work * work)   # minimos cuadrados forzando que pase por el origen
+        kfit = np.sum(tts * work) / np.sum(work * work)
         fig, ax = plt.subplots()
         ax.loglog(ns, tts, "o-", color=C["exp"], label="Medido (p=8)")
         ax.loglog(ns, kfit * work, "--", color=C["model"], label="Modelo $\\propto n_{tr}\\,n_{te}/p$")
         ax.set_xlabel("tamano del problema $n$"); ax.set_ylabel("tiempo total [s]")
         ax.set_title("Escalabilidad con el tamano del problema (p=8)")
         ax2 = ax.twinx(); ax2.plot(ns, accs, "^:", color=C["comp"], label="accuracy")
-        ax2.set_ylabel("accuracy"); ax2.set_ylim(0.9, 1.0); ax2.grid(False)
+        ax2.set_ylabel("accuracy"); ax2.set_ylim(0.9, 1.02); ax2.grid(False)
         l1, lab1 = ax.get_legend_handles_labels(); l2, lab2 = ax2.get_legend_handles_labels()
         ax.legend(l1 + l2, lab1 + lab2, loc="upper left")
         save(fig, "fig_tamano")
+        gf2 = col(size, "gflops_total")
+        fig, ax = plt.subplots()
+        ax.semilogx(ns, gf2, "o-", color=C["comp"])
+        ax.set_xlabel("tamano del problema $n$"); ax.set_ylabel("rendimiento sostenido [GFLOP/s]")
+        ax.set_title("Rendimiento vs tamano del problema (p=8)")
+        save(fig, "fig_gflops_n")
 
-    # === FIG 6: escalabilidad debil ===
+    # === FIG 6: escalabilidad debil, UNA CURVA POR CARGA ===
+    ew_min = np.nan
     if weak:
-        pw = np.array([r["p"] for r in weak])
-        ew = (weak[0]["t_total"]) / np.array([r["t_total"] for r in weak])  # eficiencia debil = T(1)/T(p), manteniendo n/p constante
+        cargas = sorted({r["n_te"] for r in weak})
         fig, ax = plt.subplots()
         ax.axhline(1.0, color=C["ideal"], ls="--", label="Ideal (debil)")
-        ax.plot(pw, ew, "o-", color=C["extra"], label="Medido ($n_{tr}=2000\\,p,\\ n_{te}=2000$)")
+        for i, carga in enumerate(cargas):
+            g = [r for r in weak if r["n_te"] == carga]
+            pw = col(g, "p"); tw = col(g, "t_total")
+            ew = tw[0] / tw
+            ax.plot(pw, ew, "o-", color=plt.cm.viridis(i / max(len(cargas) - 1, 1)),
+                    label=f"carga/proc = {int(carga)}")
+            ew_min = np.nanmin([ew_min, ew.min()]) if not np.isnan(ew_min) else ew.min()
         ax.set_xlabel("numero de procesos $p$"); ax.set_ylabel("eficiencia debil $T(1)/T(p)$")
-        ax.set_title("Escalabilidad debil (n/p constante)")
-        ax.set_ylim(0, 1.15)
+        ax.set_title("Escalabilidad debil: una curva por carga por proceso")
+        ax.set_ylim(0, 1.15); ax.set_xscale("log", base=2)
         ax.set_xticks(pw); ax.set_xticklabels([int(x) for x in pw]); ax.legend()
         save(fig, "fig_debil")
 
-    # === FIG 7: cuanto pesa la comunicacion sobre el total, en % ===
-    frac = t_cmm / t_tot * 100.0
+    # === FIG 7: peso de la comunicacion ===
     fig, ax = plt.subplots()
     bars = ax.bar([str(int(x)) for x in p], frac, color=C["comm"], alpha=0.85)
     for b, v in zip(bars, frac):
-        ax.text(b.get_x() + b.get_width() / 2, v + 0.4, f"{v:.0f}%", ha="center", fontsize=9)
+        ax.text(b.get_x() + b.get_width() / 2, v + 0.8, f"{v:.0f}%", ha="center", fontsize=9)
     ax.set_xlabel("numero de procesos $p$"); ax.set_ylabel("comunicacion / total [%]")
     ax.set_title("Peso de la comunicacion en el tiempo total")
     ax.set_ylim(0, max(frac) * 1.25)
     save(fig, "fig_fraccion_comm")
 
-    # === FIG 8: Karp-Flatt, para estimar la fraccion serie a partir de lo medido ===
+    # === FIG 8: Karp-Flatt ===
     m = p > 1
-    e_kf = (1.0 / s_exp[m] - 1.0 / p[m]) / (1.0 - 1.0 / p[m])
+    e_kf = M.karp_flatt(s_exp, p)[m]
     fig, ax = plt.subplots()
     ax.plot(p[m], e_kf, "o-", color=C["extra"])
     ax.set_xlabel("numero de procesos $p$"); ax.set_ylabel("fraccion serie experimental $e$")
-    ax.set_title("Metrica de Karp--Flatt")
+    ax.set_title("Metrica de Karp--Flatt (si $e$ crece, manda el overhead)")
     ax.set_xticks(p[m]); ax.set_xticklabels([int(x) for x in p[m]])
     ax.set_ylim(0, max(e_kf) * 1.4)
     save(fig, "fig_karpflatt")
 
-    # === FIG 9: rendimiento sostenido conforme crece el problema (p=8) ===
-    if size:
-        ns2 = np.array([r["n"] for r in size]); gf2 = np.array([r["gflops_total"] for r in size])
+    # === FIG 10 (nueva): desglose por colectiva ===
+    if "t_bcast" in strong[0]:
+        tb, tsc, tg = col(strong, "t_bcast"), col(strong, "t_scatter"), col(strong, "t_gather")
         fig, ax = plt.subplots()
-        ax.semilogx(ns2, gf2, "o-", color=C["comp"])
-        ax.set_xlabel("tamano del problema $n$"); ax.set_ylabel("rendimiento sostenido [GFLOP/s]")
-        ax.set_title("Rendimiento vs tamano del problema (p=8)")
-        save(fig, "fig_gflops_n")
+        ax.plot(p, tb, "o-", color=C["bcast"], label="bcast (test)")
+        ax.plot(p, tsc, "s-", color=C["scatter"], label="scatter (train)")
+        ax.plot(p, tg, "^-", color=C["gather"], label="gather ($p\\cdot k\\cdot n_{te}$)")
+        ax.set_xscale("log", base=2); ax.set_yscale("log")
+        ax.set_xlabel("numero de procesos $p$"); ax.set_ylabel("tiempo [s]")
+        ax.set_title("Costo de cada colectiva (reloj del maestro)")
+        ax.set_xticks(p); ax.set_xticklabels([int(x) for x in p]); ax.legend()
+        save(fig, "fig_colectivas")
 
-    # === tabla LaTeX con el barrido de tamano (p=8) ===
+    # === FIG 11 (nueva): iso-eficiencia N(p) ===
+    frac_te = n_te / (n_tr + n_te)
+    pg2 = np.array([2, 4, 8, 16, 32, 64, 128, 256], dtype=float)
+    fig, ax = plt.subplots()
+    iso_exp = np.nan
+    for eo, cl in ((0.8, C["exp"]), (0.5, C["comm"])):
+        N = M.iso_eficiencia_N(pg2, eo, frac_te, d, k, c_comp, alpha, beta)
+        ok = ~np.isnan(N)
+        ax.loglog(pg2[ok], N[ok], "o-", color=cl, label=f"$E={eo}$")
+        q = np.polyfit(np.log(pg2[ok]), np.log(N[ok]), 1)[0]
+        if eo == 0.8:
+            iso_exp = q
+    ref = pg2 ** 2 * np.log2(pg2)
+    ax.loglog(pg2, ref / ref[0] * 6e3, "--", color=C["ideal"], label="referencia $p^2\\log_2 p$")
+    ax.set_xlabel("numero de procesos $p$"); ax.set_ylabel("$N$ necesario")
+    ax.set_title(f"Iso-eficiencia: $N(p)\\sim p^{{{iso_exp:.2f}}}$")
+    ax.legend()
+    save(fig, "fig_isoeficiencia")
+
+    # === FIG 12 (nueva): la mejora v3 vs v2 ===
+    if v2:
+        p2 = col(v2, "p"); c2 = col(v2, "t_comm")
+        fig, ax = plt.subplots()
+        ax.loglog(p2, c2, "s--", color=C["ideal"], label="v2 (colectivas con pickle)")
+        ax.loglog(p, t_cmm, "o-", color=C["exp"], label="v3 (colectivas con buffer)")
+        ax.set_xlabel("numero de procesos $p$"); ax.set_ylabel("$T_{comm}$ [s]")
+        ax.set_title("Mejora: colectivas con buffer vs serializadas")
+        ax.set_xticks(p); ax.set_xticklabels([int(x) for x in p]); ax.legend()
+        save(fig, "fig_v2_v3")
+
+    # === FIG 13 (nueva): hibrido MPI+OpenMP con 32 cores ===
+    if hyb:
+        etiq = [f"{int(r['p'])}x{int(r['threads'])}" for r in hyb]
+        th = col(hyb, "t_total")
+        fig, ax = plt.subplots()
+        b = ax.bar(etiq, th, color=C["extra"], alpha=0.85)
+        for bb, v in zip(b, th):
+            ax.text(bb.get_x() + bb.get_width() / 2, v + 0.008, f"{v:.3f}s", ha="center", fontsize=9)
+        ax.axhline(t_tot[int(np.argmin(t_tot))], color=C["comp"], ls="--",
+                   label=f"MPI puro $p={p_opt_exp}$ (16 cores)")
+        ax.set_xlabel("rangos MPI $\\times$ hilos OpenMP (siempre 32 cores)")
+        ax.set_ylabel("tiempo total [s]")
+        ax.set_title("Hibrido: mismo presupuesto de cores, distinta reparticion")
+        ax.legend()
+        save(fig, "fig_hibrido")
+
+    # === FIG 14 (nueva): energia (RAPL) ===
+    if ener:
+        pe = col(ener, "p"); ej = col(ener, "energia_J"); jq = col(ener, "J_por_consulta")
+        p_ener = int(pe[int(np.argmin(ej))])
+        fig, ax = plt.subplots()
+        ax.plot(pe, ej, "o-", color=C["comm"], label="energia total [J]")
+        ax.axvline(p_ener, color=C["comm"], ls=":", lw=1.6)
+        ax.text(p_ener, ej.max() * 0.95, f" min energia $p={p_ener}$", color=C["comm"], fontsize=9)
+        ax.set_xscale("log", base=2)
+        ax.set_xlabel("numero de procesos $p$"); ax.set_ylabel("energia [J]")
+        ax.set_title("Consumo energetico (RAPL) vs procesos")
+        ax2 = ax.twinx(); ax2.plot(pe, jq, "^:", color=C["extra"], label="J / consulta")
+        ax2.set_ylabel("J por consulta"); ax2.grid(False)
+        l1, a1 = ax.get_legend_handles_labels(); l2, a2 = ax2.get_legend_handles_labels()
+        ax.legend(l1 + l2, a1 + a2, loc="upper center")
+        ax.set_xticks(pe); ax.set_xticklabels([int(x) for x in pe])
+        save(fig, "fig_energia")
+
+    # ----------------------------- tablas -----------------------------
+    def tabla(nombre, cab, filas, fmt):
+        with open(os.path.join(INFORME, nombre), "w", encoding="utf-8") as f:
+            f.write(f"\\begin{{tabular}}{{{fmt}}}\n\\toprule\n{cab} \\\\\n\\midrule\n")
+            for fila in filas:
+                f.write(fila + " \\\\\n")
+            f.write("\\bottomrule\n\\end{tabular}\n")
+        print(f"  tabla  -> informe/{nombre}")
+
+    tabla("tabla_resultados.tex",
+          "$p$ & $T_{tot}$ [s] & $T_{comp}$ [s] & $T_{comm}$ [s] & $S(p)$ & $E(p)$ & acc",
+          [f"{int(p[i])} & {t_tot[i]:.4f} & {t_cmp[i]:.4f} & {t_cmm[i]:.4f} & "
+           f"{s_exp[i]:.2f} & {e_exp[i]:.2f} & {acc[i]:.4f}" for i in range(len(p))],
+          "rrrrrrr")
+
+    if "t_bcast" in strong[0]:
+        tabla("tabla_colectivas.tex",
+              "$p$ & $T_{bcast}$ & $T_{scatter}$ & $T_{comp}$ & $T_{gather}$ & suma & $T_{tot}$",
+              [f"{int(p[i])} & {tb[i]:.4f} & {tsc[i]:.4f} & {t_cmp[i]:.4f} & {tg[i]:.4f} & "
+               f"{tb[i]+tsc[i]+t_cmp[i]+tg[i]:.4f} & {t_tot[i]:.4f}" for i in range(len(p))],
+              "rrrrrrr")
+
     if size:
-        with open(os.path.join(INFORME, "tabla_size.tex"), "w", encoding="utf-8") as f:
-            f.write("\\begin{tabular}{rrrrrr}\n\\toprule\n")
-            f.write("$n$ & $n_{tr}$ & $n_{te}$ & $T_{tot}$ [s] & GFLOP/s & acc \\\\\n\\midrule\n")
-            for r in size:
-                f.write(f"{int(r['n'])} & {int(r['n_tr'])} & {int(r['n_te'])} & "
-                        f"{r['t_total']:.4f} & {r['gflops_total']:.1f} & {r['acc']:.4f} \\\\\n")
-            f.write("\\bottomrule\n\\end{tabular}\n")
-        print("  tabla  -> informe/tabla_size.tex")
+        tabla("tabla_size.tex", "$n$ & $n_{tr}$ & $n_{te}$ & $T_{tot}$ [s] & GFLOP/s & acc",
+              [f"{int(r['n'])} & {int(r['n_tr'])} & {int(r['n_te'])} & {r['t_total']:.4f} & "
+               f"{r['gflops_total']:.1f} & {r['acc']:.4f}" for r in size], "rrrrrr")
 
-    # === tabla LaTeX de la escalabilidad debil ===
     if weak:
-        t1w = weak[0]["t_total"]
-        with open(os.path.join(INFORME, "tabla_weak.tex"), "w", encoding="utf-8") as f:
-            f.write("\\begin{tabular}{rrrrr}\n\\toprule\n")
-            f.write("$p$ & $n_{tr}$ & $T_{tot}$ [s] & $T_{comm}$ [s] & $E_{debil}$ \\\\\n\\midrule\n")
-            for r in weak:
-                ew = t1w / r["t_total"]
-                f.write(f"{int(r['p'])} & {int(r['n_tr'])} & {r['t_total']:.4f} & "
-                        f"{r['t_comm']:.4f} & {ew:.2f} \\\\\n")
-            f.write("\\bottomrule\n\\end{tabular}\n")
-        print("  tabla  -> informe/tabla_weak.tex")
+        filas = []
+        for carga in sorted({r["n_te"] for r in weak}):
+            g = [r for r in weak if r["n_te"] == carga]
+            t1 = g[0]["t_total"]
+            for r in g:
+                filas.append(f"{int(carga)} & {int(r['p'])} & {int(r['n_tr'])} & "
+                             f"{r['t_total']:.4f} & {r['t_comm']:.4f} & {t1/r['t_total']:.2f}")
+        tabla("tabla_weak.tex", "carga/proc & $p$ & $n_{tr}$ & $T_{tot}$ [s] & $T_{comm}$ [s] & $E_{debil}$",
+              filas, "rrrrrr")
 
-    # numeritos sueltos que despues cito directo en el texto del informe
-    with open(os.path.join(INFORME, "modelo_extra.tex"), "w", encoding="utf-8") as f:
-        f.write(f"\\newcommand{{\\fraccommax}}{{{frac.max():.0f}}}\n")
-        f.write(f"\\newcommand{{\\ekfmin}}{{{e_kf.min():.3f}}}\n")
-        f.write(f"\\newcommand{{\\ekfmax}}{{{e_kf.max():.3f}}}\n")
-        if size:
-            f.write(f"\\newcommand{{\\gfmaxn}}{{{gf2.max():.0f}}}\n")
-            f.write(f"\\newcommand{{\\nmax}}{{{int(ns2.max())}}}\n")
-        if weak:
-            f.write(f"\\newcommand{{\\ewmin}}{{{(weak[0]['t_total']/weak[-1]['t_total']):.2f}}}\n")
-    print("  params -> informe/modelo_extra.tex")
+    if hyb:
+        tabla("tabla_hibrido.tex", "rangos $\\times$ hilos & cores & $T_{tot}$ [s] & $T_{comp}$ & $T_{comm}$ & GFLOP/s",
+              [f"{int(r['p'])} $\\times$ {int(r['threads'])} & {int(r['p']*r['threads'])} & "
+               f"{r['t_total']:.4f} & {r['t_comp']:.4f} & {r['t_comm']:.4f} & {r['gflops_total']:.1f}"
+               for r in hyb], "rrrrrr")
 
-    # === tabla LaTeX del barrido fuerte (escalabilidad fuerte) ===
-    tex = os.path.join(ROOT, "informe", "tabla_resultados.tex")
-    with open(tex, "w", encoding="utf-8") as f:
-        f.write("\\begin{tabular}{rrrrrrr}\n\\toprule\n")
-        f.write("$p$ & $T_{tot}$ [s] & $T_{comp}$ [s] & $T_{comm}$ [s] & "
-                "$S(p)$ & $E(p)$ & acc \\\\\n\\midrule\n")
-        for i in range(len(p)):
-            f.write(f"{int(p[i])} & {t_tot[i]:.4f} & {t_cmp[i]:.4f} & {t_cmm[i]:.4f} & "
-                    f"{s_exp[i]:.2f} & {e_exp[i]:.2f} & {acc[i]:.4f} \\\\\n")
-        f.write("\\bottomrule\n\\end{tabular}\n")
-    print(f"  tabla  -> informe/tabla_resultados.tex")
+    if ener:
+        tabla("tabla_energia.tex", "$p$ & $t$ [s] & $E$ [J] & $P$ [W] & J/consulta",
+              [f"{int(r['p'])} & {r['tiempo_s']:.2f} & {r['energia_J']:.1f} & "
+               f"{r['potencia_W']:.1f} & {r['J_por_consulta']:.4f}" for r in ener], "rrrrr")
 
-    # parametros del modelo alpha-beta calibrado, para citarlos en el texto
-    with open(os.path.join(ROOT, "informe", "modelo_params.tex"), "w", encoding="utf-8") as f:
+    # ------------------- numeritos que cito en el texto -------------------
+    with open(os.path.join(INFORME, "modelo_params.tex"), "w", encoding="utf-8") as f:
         f.write(f"\\newcommand{{\\Ts}}{{{ts:.4f}}}\n")
-        f.write(f"\\newcommand{{\\alphaus}}{{{alpha*1e6:.2f}}}\n")
-        f.write(f"\\newcommand{{\\betans}}{{{beta*1e9:.3f}}}\n")
-        f.write(f"\\newcommand{{\\bw}}{{{1/beta/1e9:.1f}}}\n")
+        f.write(f"\\newcommand{{\\alphaus}}{{{alpha*1e6:.0f}}}\n")
+        f.write(f"\\newcommand{{\\betans}}{{{beta*1e9:.2f}}}\n")
+        f.write(f"\\newcommand{{\\bw}}{{{1/beta/1e9:.2f}}}\n")
         f.write(f"\\newcommand{{\\popt}}{{{p_opt}}}\n")
+        f.write(f"\\newcommand{{\\poptexp}}{{{p_opt_exp}}}\n")
         f.write(f"\\newcommand{{\\accbase}}{{{acc[0]:.4f}}}\n")
         f.write(f"\\newcommand{{\\smax}}{{{s_exp.max():.2f}}}\n")
+        f.write(f"\\newcommand{{\\sfinal}}{{{s_exp[-1]:.2f}}}\n")
         f.write(f"\\newcommand{{\\pmax}}{{{int(p.max())}}}\n")
+        f.write(f"\\newcommand{{\\tmin}}{{{t_tot.min():.4f}}}\n")
+        f.write(f"\\newcommand{{\\tfinal}}{{{t_tot[-1]:.4f}}}\n")
     print("  params -> informe/modelo_params.tex")
+
+    with open(os.path.join(INFORME, "modelo_extra.tex"), "w", encoding="utf-8") as f:
+        f.write(f"\\newcommand{{\\fraccommax}}{{{frac.max():.0f}}}\n")
+        f.write(f"\\newcommand{{\\ekfmin}}{{{np.nanmin(e_kf):.3f}}}\n")
+        f.write(f"\\newcommand{{\\ekfmax}}{{{np.nanmax(e_kf):.3f}}}\n")
+        f.write(f"\\newcommand{{\\isoexp}}{{{iso_exp:.2f}}}\n")
+        f.write(f"\\newcommand{{\\emin}}{{{e_exp.min():.3f}}}\n")
+        if size:
+            f.write(f"\\newcommand{{\\gfmaxn}}{{{gf2.max():.0f}}}\n")
+            f.write(f"\\newcommand{{\\nmax}}{{{int(ns.max())}}}\n")
+        if weak:
+            f.write(f"\\newcommand{{\\ewmin}}{{{ew_min:.2f}}}\n")
+        if hyb:
+            mejor = min(hyb, key=lambda r: r["t_total"])
+            peor = max(hyb, key=lambda r: r["t_total"])
+            f.write(f"\\newcommand{{\\hybmejor}}{{{int(mejor['p'])}\\times{int(mejor['threads'])}}}\n")
+            f.write(f"\\newcommand{{\\hybgain}}{{{peor['t_total']/mejor['t_total']:.2f}}}\n")
+        if ener:
+            f.write(f"\\newcommand{{\\eneropt}}{{{p_ener}}}\n")
+            f.write(f"\\newcommand{{\\enerjmin}}{{{ej.min():.0f}}}\n")
+            f.write(f"\\newcommand{{\\enerjq}}{{{jq.min():.4f}}}\n")
+        if v2:
+            f.write(f"\\newcommand{{\\vtresganancia}}{{{(c2[0]/t_cmm[0]):.1f}}}\n")
+    print("  params -> informe/modelo_extra.tex")
 
 
 if __name__ == "__main__":

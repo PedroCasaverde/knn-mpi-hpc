@@ -18,9 +18,14 @@ src/make_slides.py
 
 # Notas internas / artefactos de QA (no forman parte de la entrega)
 GUIA_ALINEACION_PROFESOR.md
+PREGUNTAS_PROFESOR.md
 extracciones_transcripciones.json
 _ppt_preview.pdf
 
 # Sistema
 .DS_Store
 Thumbs.db
+
+# Logs de SLURM que bajan del cluster (no son parte de la entrega)
+results/khipu/*.out
+results/khipu/*.err

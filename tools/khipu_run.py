@@ -70,7 +70,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--user", default="pedro.casaverde")
     ap.add_argument("--password-file", default=os.path.join(ROOT, "..", "..", "..", "access.txt"))
-    ap.add_argument("--wait-min", type=int, default=30, help="minutos maximos de espera")
+    ap.add_argument("--wait-min", type=int, default=100, help="minutos maximos de espera")
     args = ap.parse_args()
 
     pwd = read_password(args)
