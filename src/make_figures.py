@@ -302,6 +302,22 @@ def main():
         ax.set_xticks(pe); ax.set_xticklabels([int(x) for x in pe])
         save(fig, "fig_energia")
 
+        # === FIG 15 (nueva): ¿la energia va como 1/eficiencia o como 1/speedup? ===
+        # En clase se dice que el consumo es inversamente proporcional a la eficiencia.
+        # Con nuestros datos no cierra: E = P*t = P*Ts/S, asi que va como 1/SPEEDUP.
+        # Se ve solo: J*S queda casi plano (lo que se mueve es la potencia), J*E se derrumba.
+        te = col(ener, "tiempo_s")
+        Se = te[0] / te
+        Ee = Se / pe
+        fig, ax = plt.subplots()
+        ax.plot(pe, ej * Se, "o-", color=C["exp"], label="$J\\cdot S$  (si $J\\propto 1/S$, es constante)")
+        ax.plot(pe, ej * Ee, "s--", color=C["comm"], label="$J\\cdot E$  (si $J\\propto 1/E$, seria constante)")
+        ax.set_xscale("log", base=2); ax.set_yscale("log")
+        ax.set_xlabel("numero de procesos $p$"); ax.set_ylabel("[J]")
+        ax.set_title("La energia va como $1/S$, no como $1/E$")
+        ax.set_xticks(pe); ax.set_xticklabels([int(x) for x in pe]); ax.legend()
+        save(fig, "fig_energia_ley")
+
     # ----------------------------- tablas -----------------------------
     def tabla(nombre, cab, filas, fmt):
         with open(os.path.join(INFORME, nombre), "w", encoding="utf-8") as f:
@@ -384,9 +400,21 @@ def main():
             f.write(f"\\newcommand{{\\hybmejor}}{{{int(mejor['p'])}\\times{int(mejor['threads'])}}}\n")
             f.write(f"\\newcommand{{\\hybgain}}{{{peor['t_total']/mejor['t_total']:.2f}}}\n")
         if ener:
+            # OJO: el bloque de energia corre en UN nodo (RAPL solo ve el nodo local), asi que
+            # su optimo de tiempo NO es el del barrido fuerte multi-nodo. Hay que compararlos
+            # dentro del mismo experimento o no vale.
+            te = col(ener, "tiempo_s"); pw = col(ener, "potencia_W")
+            p_t_ener = int(pe[int(np.argmin(te))])
+            Se = te[0] / te                      # speedup dentro del bloque de energia
+            Ee = Se / pe
+            js, jee = ej * Se, ej * Ee           # si energia ~ 1/S, entonces J*S es constante
             f.write(f"\\newcommand{{\\eneropt}}{{{p_ener}}}\n")
+            f.write(f"\\newcommand{{\\enerptiempo}}{{{p_t_ener}}}\n")
             f.write(f"\\newcommand{{\\enerjmin}}{{{ej.min():.0f}}}\n")
             f.write(f"\\newcommand{{\\enerjq}}{{{jq.min():.4f}}}\n")
+            f.write(f"\\newcommand{{\\enerpotpct}}{{{100*(pw.max()/pw.min()-1):.0f}}}\n")
+            f.write(f"\\newcommand{{\\enerjspct}}{{{100*(js.max()/js.min()-1):.0f}}}\n")
+            f.write(f"\\newcommand{{\\enerjepct}}{{{100*(jee.max()/jee.min()-1):.0f}}}\n")
         if v2:
             f.write(f"\\newcommand{{\\vtresganancia}}{{{(c2[0]/t_cmm[0]):.1f}}}\n")
     print("  params -> informe/modelo_extra.tex")
