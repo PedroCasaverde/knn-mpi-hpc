@@ -7,7 +7,21 @@ DAG del enunciado. Las mediciones reales se ejecutan en el clúster **Khipu**
 (UTEC) y se contrastan con un **modelo teórico α-β**.
 
 > Proyecto del curso *Applied High Performance Computing* (Prof. José Fiestas).
-> Entrega parcial: informe en `informe/` + presentación.
+> Entrega final: informe + presentación (van a Canvas, no a este repo).
+
+## Resultado principal
+
+Con `n = 14376` en **dos nodos** de Khipu, el tiempo baja hasta un mínimo en
+**`p = 16`** (0.163 s) y con `p = 32` **vuelve a subir** (0.433 s): el speedup pasa
+de 3.45× a 1.29×. La causa está medida: la comunicación pasa de pesar 0.3 % a
+**84 %** del total, y la fracción serie de Karp-Flatt **crece** (0.22 → 0.77), lo que
+descarta un cuello secuencial fijo y apunta al overhead.
+
+El motivo de fondo es que las tres colectivas no son simétricas: el `bcast` manda un
+volumen fijo, el `scatter` manda cada vez menos, pero el **`gather` manda cada vez más**
+(el maestro recibe `p·k·n_te` candidatos). De ahí sale la función de iso-eficiencia:
+para sostener `E` constante hace falta **`N ~ p²·log₂p`**, peor que el `N ~ p·log₂p`
+de un Random Forest. El ajuste numérico sobre los datos da `p^2.01`.
 
 ## DAG / esquema de paralelización
 
@@ -60,19 +74,45 @@ python knn_digits_sec.py --n 1797 --k 7        # KNN secuencial
 export KHIPU_PASSWORD=...      # o usa --password-file
 python tools/khipu_run.py
 ```
-El job ejecuta tres barridos con `module load gnu12 openmpi4 python3/3.11.11`:
-1. **Escalabilidad fuerte** - `n` fijo, `p = 1,2,4,8,16,32`.
+El job corre en la partición `standard` (la `debug` tiene `MaxWall` de 1 h y el job se
+queda en `PD`), con `module load gnu12 openmpi4 python3/3.11.11`, y ejecuta:
+
+0. **Validación** - la `v3` tiene que reproducir el accuracy de la `v2` con `p = 3` y
+   `p = 7` (que no dividen a `n_tr`, así que los bloques del `Scatterv` quedan
+   desiguales). Si no coinciden, **aborta**.
+1. **Escalabilidad fuerte** - `n` fijo, `p = 1..32`, con `v2` y `v3`.
 2. **Tamaño del problema** - `p = 8`, `n` creciente.
-3. **Escalabilidad débil** - `n = 1797·p` (carga por proceso constante).
+3. **Escalabilidad débil** - tres cargas por proceso (1000/2000/4000) → **tres curvas**.
+4. **Híbrido MPI+OpenMP** - `p × hilos = 32`.
+5. **Energía** - contadores **RAPL** del socket, leídos antes y después.
 
 ### Figuras
 ```bash
 python src/make_figures.py     # lee results/khipu/*.csv -> results/figs/*.pdf
 ```
 
+## Versiones (tags de Git)
+
+| Tag | Qué trae |
+|-----|----------|
+| `v0-secuencial` | Baseline con la distancia a mano. |
+| `v1-scatter-gather` | Versión MPI funcionando con el DAG. |
+| `v2-optimizada` | Cronómetro por fase, promediado y descarte de warmup. |
+| `v3-buffers` | Colectivas con buffer (`Bcast`/`Scatterv`/`Gather`), sin `pickle`. |
+
 ## Notas de método
-- El escalado es limpio porque cada rango MPI usa **1 hilo** (`OMP/BLAS=1`).
-- Se promedian ≥10 repeticiones y se descartan las primeras (warmup).
+- **Se mide en dos nodos** con `--map-by node`, para que toda colectiva con `p ≥ 2`
+  cruce la red. Con un solo nodo la comunicación es un `memcpy` y la curva no crece:
+  el ajuste de `β` se va al piso y el modelo α-β deja de decir nada.
+- Los tiempos que se reportan son los del **maestro** (rango 0), cuyas fases suman
+  exactamente el total. Sumar los `MAX` de cada fase por separado **no** da `t_total`,
+  porque los máximos caen en rangos distintos.
+- El escalado es limpio porque cada rango MPI usa **1 hilo** (`OMP/BLAS=1`), salvo en
+  el barrido híbrido.
+- Se promedian **15 repeticiones** y se descartan las 2 primeras (warmup). Los CSV
+  guardan la desviación estándar.
 - La paralelización **no degrada el accuracy** (idéntico al secuencial, verificado).
 - `n` se escala hacia abajo por submuestreo y hacia arriba por replicado con
-  ruido gaussiano leve (documentado en el informe).
+  ruido gaussiano leve. Por eso el accuracy sale 1.0000: **se mide costo, no precisión**.
+- `results/parcial/` guarda las mediciones mono-nodo de la entrega parcial, para poder
+  comparar el antes y el después.
