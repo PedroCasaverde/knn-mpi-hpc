@@ -383,7 +383,32 @@ def main():
         f.write(f"\\newcommand{{\\tfinal}}{{{t_tot[-1]:.4f}}}\n")
     print("  params -> informe/modelo_params.tex")
 
+    # ---- ¿el gather mueve volumen constante (como asume el curso) o proporcional a p? ----
+    # Se dirime ajustando T_comm con las dos hipotesis y mirando cual da un beta fisico.
+    def _ajuste(vol_fn):
+        m = p > 1
+        lg = np.log2(p[m])
+        A = np.column_stack([lg * M.N_COL, lg * vol_fn(p[m])])
+        sol, *_ = np.linalg.lstsq(A, t_cmm[m], rcond=None)
+        pred = A @ sol
+        r2 = 1 - np.sum((t_cmm[m] - pred) ** 2) / np.sum((t_cmm[m] - t_cmm[m].mean()) ** 2)
+        return float(sol[1]), float(r2)          # beta, R2
+
+    _vb = lambda pp: n_te * (d + 1) * M.BYTES
+    _vs = lambda pp: (n_tr / pp) * (d + 1) * M.BYTES
+    beta_cte, r2_cte = _ajuste(lambda pp: _vb(pp) + _vs(pp) + n_te * k * 2 * M.BYTES)
+    beta_p, r2_p = _ajuste(lambda pp: _vb(pp) + _vs(pp) + pp * n_te * k * 2 * M.BYTES)
+    if "t_gather" in strong[0]:
+        crece_gather = tg[-1] / tg[1]            # cuanto crece el gather de p=2 a p=max
+    else:
+        crece_gather = float("nan")
+
     with open(os.path.join(INFORME, "modelo_extra.tex"), "w", encoding="utf-8") as f:
+        f.write(f"\\newcommand{{\\rdoscte}}{{{r2_cte:.2f}}}\n")
+        f.write(f"\\newcommand{{\\rdosp}}{{{r2_p:.2f}}}\n")
+        f.write(f"\\newcommand{{\\betacte}}{{{beta_cte*1e9:.1f}}}\n")
+        f.write(f"\\newcommand{{\\gathercrece}}{{{crece_gather:.1f}}}\n")
+        f.write(f"\\newcommand{{\\pcrece}}{{{int(p.max()/2)}}}\n")
         f.write(f"\\newcommand{{\\fraccommax}}{{{frac.max():.0f}}}\n")
         f.write(f"\\newcommand{{\\ekfmin}}{{{np.nanmin(e_kf):.3f}}}\n")
         f.write(f"\\newcommand{{\\ekfmax}}{{{np.nanmax(e_kf):.3f}}}\n")

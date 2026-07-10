@@ -19,9 +19,11 @@ descarta un cuello secuencial fijo y apunta al overhead.
 
 El motivo de fondo es que las tres colectivas no son simétricas: el `bcast` manda un
 volumen fijo, el `scatter` manda cada vez menos, pero el **`gather` manda cada vez más**
-(el maestro recibe `p·k·n_te` candidatos). De ahí sale la función de iso-eficiencia:
-para sostener `E` constante hace falta **`N ~ p²·log₂p`**, peor que el `N ~ p·log₂p`
-de un Random Forest. El ajuste numérico sobre los datos da `p^2.01`.
+(el maestro recibe `p·k·n_te` candidatos). La condición de iso-eficiencia que vimos en
+clase es `n_tr ~ p·log p`; sobre nuestro modelo calibrado, y asumiendo que el volumen del
+`gather` crece con `p`, sube a **`N ~ p²·log₂p`** (el ajuste numérico da `p^2.01`). Ese
+exponente sale de resolver `E(N,p)` sobre el modelo, no de un barrido de `N` con `E` fija,
+así que lo tomamos como cota: el `p·log p` del curso es el piso.
 
 ## DAG / esquema de paralelización
 
